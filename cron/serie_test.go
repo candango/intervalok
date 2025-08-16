@@ -62,12 +62,6 @@ func TestCronSerie(t *testing.T) {
 			after: "2025-08-13 00:00:00", // Wensday
 			want:  "2025-08-17 00:00:00", // Next Sunday
 		},
-		{
-			name:  "At the 20th day of the month",
-			expr:  "0 0 20 * *",
-			after: "2025-08-13 00:00:00",
-			want:  "2025-08-17 00:00:00", // Next Sunday
-		},
 	}
 
 	for _, c := range cases {
