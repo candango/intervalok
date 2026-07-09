@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -208,4 +209,42 @@ func TestCronSeriesSincePrevError(t *testing.T) {
 	from := mustParseTime(t, "2006-01-02 15:04:05", "2025-08-13 00:00:00")
 	_, err = series.SincePrev(from)
 	assert.Error(t, err)
+}
+
+func TestCronSeriesNoMatchErrorIsErrNoMatch(t *testing.T) {
+	series, err := NewCronSeries("0 0 31 2 *")
+	if err != nil {
+		t.Fatalf("failed to create cron series: %v", err)
+	}
+	from := mustParseTime(t, "2006-01-02 15:04:05", "2025-08-13 00:00:00")
+
+	_, err = series.UntilNext(from)
+	assert.ErrorIs(t, err, ErrNoMatch)
+
+	_, err = series.SincePrev(from)
+	assert.ErrorIs(t, err, ErrNoMatch)
+}
+
+func TestNewCronSeriesInvalidExprIsErrInvalidExpr(t *testing.T) {
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "wrong field count", expr: "* * * *"},
+		{name: "bad step value", expr: "*/x * * * *"},
+		{name: "bad range", expr: "60-10 * * * *"},
+		{name: "bad value", expr: "99 * * * *"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := NewCronSeries(c.expr)
+			assert.True(t, errors.Is(err, ErrInvalidExpr))
+		})
+	}
+}
+
+func TestIsValid(t *testing.T) {
+	assert.True(t, IsValid("5 * * * *"))
+	assert.False(t, IsValid("not a cron expression"))
 }

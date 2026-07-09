@@ -1,11 +1,20 @@
 package cron
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// ErrInvalidExpr is wrapped by errors returned when a cron expression fails
+// to parse. Use errors.Is(err, ErrInvalidExpr) to detect parse failures.
+var ErrInvalidExpr = errors.New("invalid cron expression")
+
+// ErrNoMatch is wrapped by errors returned when no scheduled time exists
+// within the search window, for example an impossible calendar date.
+var ErrNoMatch = errors.New("no match found for expression")
 
 // CronSeries represents a parsed cron expression and stores allowed values for each field.
 type CronSeries struct {
@@ -28,7 +37,7 @@ type CronSeries struct {
 func NewCronSeries(expr string) (*CronSeries, error) {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
-		return nil, fmt.Errorf("invalid cron expression: must have 5 fields")
+		return nil, fmt.Errorf("%w: must have 5 fields, got %d", ErrInvalidExpr, len(fields))
 	}
 	c := &CronSeries{expr: expr}
 	if err := parseField(fields[0], 0, 59, c.minutes[:]); err != nil {
@@ -68,7 +77,7 @@ func parseField(field string, min, max int, arr []bool) error {
 			var err error
 			step, err = strconv.Atoi(subs[1])
 			if err != nil || step <= 0 {
-				return fmt.Errorf("invalid step value: %s", subs[1])
+				return fmt.Errorf("%w: invalid step value: %s", ErrInvalidExpr, subs[1])
 			}
 		}
 
@@ -82,12 +91,12 @@ func parseField(field string, min, max int, arr []bool) error {
 			rmin, err1 = strconv.Atoi(bounds[0])
 			rmax, err2 = strconv.Atoi(bounds[1])
 			if err1 != nil || err2 != nil || rmin > rmax || rmin < min || rmax > max {
-				return fmt.Errorf("invalid range: %s", rangePart)
+				return fmt.Errorf("%w: invalid range: %s", ErrInvalidExpr, rangePart)
 			}
 		} else {
 			val, err := strconv.Atoi(rangePart)
 			if err != nil || val < min || val > max {
-				return fmt.Errorf("invalid value: %s", rangePart)
+				return fmt.Errorf("%w: invalid value: %s", ErrInvalidExpr, rangePart)
 			}
 			rmin, rmax = val, val
 		}
@@ -121,7 +130,7 @@ func (c *CronSeries) Prev(before time.Time) time.Time {
 func (c *CronSeries) UntilNext(from time.Time) (time.Duration, error) {
 	next := c.next(from)
 	if next.IsZero() {
-		return 0, fmt.Errorf("cron: no match found for expression %q", c.expr)
+		return 0, fmt.Errorf("%w: %q", ErrNoMatch, c.expr)
 	}
 	return next.Sub(from), nil
 }
@@ -131,9 +140,16 @@ func (c *CronSeries) UntilNext(from time.Time) (time.Duration, error) {
 func (c *CronSeries) SincePrev(from time.Time) (time.Duration, error) {
 	prev := c.prev(from)
 	if prev.IsZero() {
-		return 0, fmt.Errorf("cron: no match found for expression %q", c.expr)
+		return 0, fmt.Errorf("%w: %q", ErrNoMatch, c.expr)
 	}
 	return from.Sub(prev), nil
+}
+
+// IsValid reports whether expr parses as a valid cron expression, without
+// requiring a CronSeries to be kept around.
+func IsValid(expr string) bool {
+	_, err := NewCronSeries(expr)
+	return err == nil
 }
 
 // next computes the next time that matches the cron schedule after the given
