@@ -2,36 +2,47 @@
 // the calendar to answer "when is the next/previous occurrence" and "how
 // long until/since it".
 //
+//	series, err := cron.NewCronSeries("*/15 * * * *") // every 15 minutes
+//	if err != nil {
+//	    return err
+//	}
+//	for {
+//	    wait, err := series.UntilNext(time.Now())
+//	    if err != nil {
+//	        return err
+//	    }
+//	    time.Sleep(wait)
+//	    doSomething()
+//	}
+//
 // CronSeries is the entry point: parse an expression with NewCronSeries,
 // then query it with Next/Prev (absolute time.Time) or UntilNext/SincePrev
-// (time.Duration, ready for time.Sleep or a retry loop). CronSeries is
-// stateless: every method is a pure function of its argument, so the same
-// value can be shared across goroutines and queried repeatedly without
-// synchronization.
+// (time.Duration, as used above). CronSeries is stateless: every method is a
+// pure function of its argument, so the same value can be shared across
+// goroutines and queried repeatedly without synchronization.
 //
 // # Expression syntax
 //
-// Expressions use the standard 5-field format: minute, hour, day-of-month,
-// month, day-of-week. Each field accepts a wildcard ("*"), a single value, a
-// range ("1-5"), a step ("*/5", "1-30/5"), or a comma-separated list of any
-// of those. Month and day-of-week fields also accept the standard
-// three-letter names ("jan"-"dec", "sun"-"sat"), case-insensitively.
+// A standard expression has 5 fields: minute, hour, day-of-month, month,
+// day-of-week. Each field accepts a wildcard ("*"), a single value, a range
+// ("1-5"), a step ("*/5", "1-30/5"), or a comma-separated list of any of
+// those. Month and day-of-week fields also accept the standard three-letter
+// names ("jan"-"dec", "sun"-"sat"), case-insensitively.
 //
-// A 6-field expression prepends seconds ("second minute hour day-of-month
-// month day-of-week"), raising the schedule's resolution from minutes to
-// seconds. A 7-field expression additionally appends a year field. This
-// matches the field order used by robfig/cron, the de facto standard Go
-// cron library; it differs from croniter, which appends seconds and year
-// at the end instead of prepending seconds.
-//
-// When both day-of-month and day-of-week are restricted (neither is "*"),
-// standard cron matches a day by their union: it fires when either field
-// matches, not only when both do. This is the same rule vixie cron and its
-// descendants use; see man 5 crontab.
-//
-// A leading "@" alias expands to a fixed expression before parsing:
-// @yearly/@annually ("0 0 1 1 *"), @monthly ("0 0 1 * *"), @weekly
-// ("0 0 * * 0"), @daily/@midnight ("0 0 * * *"), @hourly ("0 * * * *").
+//   - A 6-field expression prepends seconds ("second minute hour
+//     day-of-month month day-of-week"), raising the schedule's resolution
+//     from minutes to seconds.
+//   - A 7-field expression additionally appends a year field.
+//   - This field order matches robfig/cron, the de facto standard Go cron
+//     library; it differs from croniter, which appends seconds and year at
+//     the end instead of prepending seconds.
+//   - When both day-of-month and day-of-week are restricted (neither is
+//     "*"), standard cron matches a day by their union: it fires when
+//     either field matches, not only when both do. This is the same rule
+//     vixie cron and its descendants use; see man 5 crontab.
+//   - A leading "@" alias expands to a fixed expression before parsing:
+//     @yearly/@annually ("0 0 1 1 *"), @monthly ("0 0 1 * *"), @weekly
+//     ("0 0 * * 0"), @daily/@midnight ("0 0 * * *"), @hourly ("0 * * * *").
 //
 // # Errors
 //
