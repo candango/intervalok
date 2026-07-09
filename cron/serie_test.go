@@ -62,6 +62,24 @@ func TestCronSerie(t *testing.T) {
 			after: "2025-08-13 00:00:00", // Wensday
 			want:  "2025-08-17 00:00:00", // Next Sunday
 		},
+		{
+			name:  "DOM and DOW restricted, DOM wins",
+			expr:  "0 0 20 * 5",
+			after: "2025-08-16 00:00:00", // Saturday
+			want:  "2025-08-20 00:00:00", // Wednesday the 20th, before Friday the 22nd
+		},
+		{
+			name:  "DOM and DOW restricted, DOW wins",
+			expr:  "0 0 1 * 1",
+			after: "2025-08-13 00:00:00", // Wednesday
+			want:  "2025-08-18 00:00:00", // Monday the 18th, before September 1st
+		},
+		{
+			name:  "DOM restricted only",
+			expr:  "0 0 15 * *",
+			after: "2025-08-13 00:00:00",
+			want:  "2025-08-15 00:00:00",
+		},
 	}
 
 	for _, c := range cases {
@@ -76,4 +94,15 @@ func TestCronSerie(t *testing.T) {
 			assert.Equal(t, want, got)
 		})
 	}
+}
+
+func TestCronSerieNoMatch(t *testing.T) {
+	// February 31st never exists; Next must return the zero time instead
+	// of searching forever.
+	serie, err := NewCronSerie("0 0 31 2 *")
+	if err != nil {
+		t.Fatalf("failed to create cron serie: %v", err)
+	}
+	after := mustParseTime(t, "2006-01-02 15:04:05", "2025-08-13 00:00:00")
+	assert.True(t, serie.Next(after).IsZero())
 }

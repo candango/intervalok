@@ -14,7 +14,13 @@ type CronSerie struct {
 	dom     [32]bool // Allowed days of month (1-31, 0 unused)
 	months  [13]bool // Allowed months (1-12, 0 unused)
 	dow     [7]bool  // Allowed days of week (0=Sunday)
-	expr    string   // Original cron expression
+	// domRestricted and dowRestricted record whether the day-of-month and
+	// day-of-week fields were given as something other than '*'. Standard
+	// cron matches a day by the union (OR) of both fields when both are
+	// restricted, and by intersection otherwise.
+	domRestricted bool
+	dowRestricted bool
+	expr          string // Original cron expression
 }
 
 // NewCronSerie parses a standard 5-field cron expression and returns a CronSerie.
@@ -40,6 +46,8 @@ func NewCronSerie(expr string) (*CronSerie, error) {
 	if err := parseField(fields[4], 0, 6, c.dow[:]); err != nil {
 		return nil, fmt.Errorf("day of week: %w", err)
 	}
+	c.domRestricted = fields[2] != "*"
+	c.dowRestricted = fields[4] != "*"
 	return c, nil
 }
 
@@ -102,134 +110,48 @@ func (c *CronSerie) Next(after time.Time) time.Time {
 }
 
 // next computes the next time that matches the cron schedule after the given
-// time. It advances through each field in order: month, day, day-of-week,
-// hour, minute. This version guarantees that the returned time is strictly
-// after 'after'.
+// time. It advances through each field in order: month, day, hour, minute,
+// jumping to the start of the next candidate period whenever a field does not
+// match. The returned time is strictly after 'after'. If no match exists
+// within a five year window (e.g. an impossible date), the zero time.Time is
+// returned.
 func (c *CronSerie) next(after time.Time) time.Time {
-	t := after.Add(time.Minute).Truncate(time.Minute)
-	for {
-		// Advance month if not allowed or if t <= after
-		if !c.months[int(t.Month())] || !t.After(after) {
-			found := false
-			for y := t.Year(); y <= t.Year()+5; y++ { // safety window
-				startMonth := int(t.Month())
-				if y > t.Year() {
-					startMonth = 1
-				}
-				for m := startMonth; m <= 12; m++ {
-					if c.months[m] {
-						cand := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, t.Location())
-						if cand.After(after) {
-							t = cand
-							found = true
-							break
-						}
-					}
-				}
-				if found {
-					break
-				}
-			}
+	t := after.Truncate(time.Minute).Add(time.Minute)
+	limit := t.AddDate(5, 0, 0) // safety window
+	for t.Before(limit) {
+		if !c.months[int(t.Month())] {
+			// Jump to the first minute of the next month.
+			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).AddDate(0, 1, 0)
 			continue
 		}
-		// Advance day of month if not allowed or if t <= after
-		daysInCurrMonth := daysInMonth(t.Year(), t.Month())
-		if !c.dom[t.Day()] || !t.After(after) {
-			found := false
-			for d := t.Day(); d <= daysInCurrMonth; d++ {
-				if c.dom[d] {
-					cand := time.Date(t.Year(), t.Month(), d, 0, 0, 0, 0, t.Location())
-					if cand.After(after) {
-						t = cand
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				// Go to the first day of next allowed month
-				t = time.Date(t.Year(), t.Month(), daysInCurrMonth, 23, 59, 0, 0, t.Location()).Add(time.Minute)
-			}
+		if !c.dayMatches(t) {
+			// Jump to the first minute of the next day.
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).AddDate(0, 0, 1)
 			continue
 		}
-		// Advance day of week if not allowed or if t <= after
-		if !c.dow[int(t.Weekday())] || !t.After(after) {
-			found := false
-			for i := 1; i <= 7; i++ {
-				nd := t.AddDate(0, 0, i)
-				if c.dow[int(nd.Weekday())] && c.dom[nd.Day()] && c.months[int(nd.Month())] {
-					if nd.After(after) {
-						t = time.Date(nd.Year(), nd.Month(), nd.Day(), 0, 0, 0, 0, t.Location())
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				// Fallback: move to a future day.
-				t = t.AddDate(0, 0, 7)
-			}
+		if !c.hours[t.Hour()] {
+			// Jump to the first minute of the next hour.
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(time.Hour)
 			continue
 		}
-		// Advance hour if not allowed or if t <= after
-		if !c.hours[t.Hour()] || !t.After(after) {
-			found := false
-			for h := t.Hour(); h < 24; h++ {
-				if c.hours[h] {
-					cand := time.Date(t.Year(), t.Month(), t.Day(), h, 0, 0, 0, t.Location())
-					if cand.After(after) {
-						t = cand
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				// Go to next day
-				t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 0, 0, t.Location()).Add(time.Minute)
-			}
+		if !c.minutes[t.Minute()] {
+			t = t.Add(time.Minute)
 			continue
 		}
-		// Advance minute if not allowed or if t <= after
-		if !c.minutes[t.Minute()] || !t.After(after) {
-			found := false
-			for m := t.Minute(); m < 60; m++ {
-				if c.minutes[m] {
-					cand := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), m, 0, 0, t.Location())
-					if cand.After(after) {
-						t = cand
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				// Go to next hour
-				t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 59, 0, 0, t.Location()).Add(time.Minute)
-			}
-			continue
-		}
-		// All fields match and t > after
 		return t
 	}
+	return time.Time{}
 }
 
-// daysInMonth returns the number of days in a given month of a specific year.
-func daysInMonth(year int, month time.Month) int {
-	switch month {
-	case 4, 6, 9, 11:
-		return 30
-	case 2:
-		if isLeap(year) {
-			return 29
-		}
-		return 28
-	default:
-		return 31
+// dayMatches reports whether t's day satisfies the day-of-month and
+// day-of-week fields. Standard cron semantics: when both fields are
+// restricted (neither is '*'), the day matches if either field matches;
+// otherwise both must match (a wildcard field matches every day anyway).
+func (c *CronSerie) dayMatches(t time.Time) bool {
+	dom := c.dom[t.Day()]
+	dow := c.dow[int(t.Weekday())]
+	if c.domRestricted && c.dowRestricted {
+		return dom || dow
 	}
-}
-
-// isLeap returns true if the given year is a leap year.
-func isLeap(year int) bool {
-	return year%4 == 0 && (year%100 != 0 || year%400 == 0)
+	return dom && dow
 }
