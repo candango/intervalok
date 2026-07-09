@@ -1,13 +1,29 @@
 // Package backoff provides pluggable exponential backoff strategies, with
 // optional jitter, for retry policies.
 //
+//	bi := backoff.NewFullJitterBackoffInterval(500 * time.Millisecond)
+//	for {
+//	    if err := doSomething(); err != nil {
+//	        time.Sleep(bi.Next())
+//	        continue
+//	    }
+//	    break
+//	}
+//
 // Jitter strategies are modeled after the AWS Architecture Blog reference
 // "Exponential Backoff and Jitter":
 // https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-// FullJitter implements that article's recommended (and, per its own
-// simulation, most effective) strategy and is this package's default.
-// PercentJitter is this package's own narrower-band alternative and is not
-// one of the strategies the article names.
+//
+//   - FullJitter implements that article's recommended (and, per its own
+//     simulation, most effective) strategy and is this package's default.
+//   - EqualJitter implements the article's "Equal Jitter" strategy, trading
+//     some desynchronization power for a wait that never gets too short.
+//   - DecorrelatedJitter implements the article's "Decorrelated Jitter"
+//     strategy as its own NextFunc rather than a JitterFunc, since its
+//     recurrence depends on the previously returned sleep instead of a
+//     Multiplier-based ramp -- see DecorrelatedNextFunc.
+//   - PercentJitter is this package's own narrower-band alternative and is
+//     not one of the strategies the article names.
 package backoff
 
 import (
