@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// CronSerie represents a parsed cron expression and stores allowed values for each field.
-type CronSerie struct {
+// CronSeries represents a parsed cron expression and stores allowed values for each field.
+type CronSeries struct {
 	minutes [60]bool // Allowed minutes (0-59)
 	hours   [24]bool // Allowed hours (0-23)
 	dom     [32]bool // Allowed days of month (1-31, 0 unused)
@@ -23,14 +23,14 @@ type CronSerie struct {
 	expr          string // Original cron expression
 }
 
-// NewCronSerie parses a standard 5-field cron expression and returns a CronSerie.
+// NewCronSeries parses a standard 5-field cron expression and returns a CronSeries.
 // Returns an error if the expression is invalid.
-func NewCronSerie(expr string) (*CronSerie, error) {
+func NewCronSeries(expr string) (*CronSeries, error) {
 	fields := strings.Fields(expr)
 	if len(fields) != 5 {
 		return nil, fmt.Errorf("invalid cron expression: must have 5 fields")
 	}
-	c := &CronSerie{expr: expr}
+	c := &CronSeries{expr: expr}
 	if err := parseField(fields[0], 0, 59, c.minutes[:]); err != nil {
 		return nil, fmt.Errorf("minute: %w", err)
 	}
@@ -100,12 +100,12 @@ func parseField(field string, min, max int, arr []bool) error {
 }
 
 // Current returns the next scheduled time after the provided time.
-func (c *CronSerie) Current(after time.Time) time.Time {
+func (c *CronSeries) Current(after time.Time) time.Time {
 	return c.next(after)
 }
 
 // Next returns the next scheduled time after the provided time.
-func (c *CronSerie) Next(after time.Time) time.Time {
+func (c *CronSeries) Next(after time.Time) time.Time {
 	return c.next(after)
 }
 
@@ -115,7 +115,7 @@ func (c *CronSerie) Next(after time.Time) time.Time {
 // match. The returned time is strictly after 'after'. If no match exists
 // within a five year window (e.g. an impossible date), the zero time.Time is
 // returned.
-func (c *CronSerie) next(after time.Time) time.Time {
+func (c *CronSeries) next(after time.Time) time.Time {
 	t := after.Truncate(time.Minute).Add(time.Minute)
 	limit := t.AddDate(5, 0, 0) // safety window
 	for t.Before(limit) {
@@ -147,7 +147,7 @@ func (c *CronSerie) next(after time.Time) time.Time {
 // day-of-week fields. Standard cron semantics: when both fields are
 // restricted (neither is '*'), the day matches if either field matches;
 // otherwise both must match (a wildcard field matches every day anyway).
-func (c *CronSerie) dayMatches(t time.Time) bool {
+func (c *CronSeries) dayMatches(t time.Time) bool {
 	dom := c.dom[t.Day()]
 	dow := c.dow[int(t.Weekday())]
 	if c.domRestricted && c.dowRestricted {

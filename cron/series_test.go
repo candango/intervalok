@@ -18,7 +18,7 @@ func mustParseTime(t *testing.T, layout, value string) time.Time {
 }
 
 // TODO: We need to keep building the session engine tests
-func TestCronSerie(t *testing.T) {
+func TestCronSeries(t *testing.T) {
 	layout := "2006-01-02 15:04:05"
 	cases := []struct {
 		name  string
@@ -84,25 +84,25 @@ func TestCronSerie(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			serie, err := NewCronSerie(c.expr)
+			series, err := NewCronSeries(c.expr)
 			if err != nil {
-				t.Fatalf("failed to create cron serie: %v", err)
+				t.Fatalf("failed to create cron series: %v", err)
 			}
 			after := mustParseTime(t, "2006-01-02 15:04:05", c.after)
-			got := serie.Next(after)
+			got := series.Next(after)
 			want := mustParseTime(t, layout, c.want)
 			assert.Equal(t, want, got)
 		})
 	}
 }
 
-func TestCronSerieNoMatch(t *testing.T) {
+func TestCronSeriesNoMatch(t *testing.T) {
 	// February 31st never exists; Next must return the zero time instead
 	// of searching forever.
-	serie, err := NewCronSerie("0 0 31 2 *")
+	series, err := NewCronSeries("0 0 31 2 *")
 	if err != nil {
-		t.Fatalf("failed to create cron serie: %v", err)
+		t.Fatalf("failed to create cron series: %v", err)
 	}
 	after := mustParseTime(t, "2006-01-02 15:04:05", "2025-08-13 00:00:00")
-	assert.True(t, serie.Next(after).IsZero())
+	assert.True(t, series.Next(after).IsZero())
 }
