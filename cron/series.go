@@ -109,6 +109,33 @@ func (c *CronSeries) Next(after time.Time) time.Time {
 	return c.next(after)
 }
 
+// Prev returns the last scheduled time strictly before the provided time.
+// If no match exists within the safety window, the zero time.Time is
+// returned.
+func (c *CronSeries) Prev(before time.Time) time.Time {
+	return c.prev(before)
+}
+
+// UntilNext returns the duration from 'from' until the next scheduled time.
+// If no match exists within the safety window, it returns an error.
+func (c *CronSeries) UntilNext(from time.Time) (time.Duration, error) {
+	next := c.next(from)
+	if next.IsZero() {
+		return 0, fmt.Errorf("cron: no match found for expression %q", c.expr)
+	}
+	return next.Sub(from), nil
+}
+
+// SincePrev returns the duration since the last scheduled time before
+// 'from'. If no match exists within the safety window, it returns an error.
+func (c *CronSeries) SincePrev(from time.Time) (time.Duration, error) {
+	prev := c.prev(from)
+	if prev.IsZero() {
+		return 0, fmt.Errorf("cron: no match found for expression %q", c.expr)
+	}
+	return from.Sub(prev), nil
+}
+
 // next computes the next time that matches the cron schedule after the given
 // time. It advances through each field in order: month, day, hour, minute,
 // jumping to the start of the next candidate period whenever a field does not
@@ -136,6 +163,44 @@ func (c *CronSeries) next(after time.Time) time.Time {
 		}
 		if !c.minutes[t.Minute()] {
 			t = t.Add(time.Minute)
+			continue
+		}
+		return t
+	}
+	return time.Time{}
+}
+
+// prev computes the last time that matches the cron schedule strictly before
+// the given time. It mirrors next, walking backwards through month, day,
+// hour, and minute. The returned time is strictly before 'before'. If no
+// match exists within a five year window, the zero time.Time is returned.
+func (c *CronSeries) prev(before time.Time) time.Time {
+	// Truncate floors to the start of the minute. If 'before' sits exactly
+	// on a minute boundary, that minute is not strictly before itself, so
+	// step back one more minute; otherwise the floored minute already is.
+	t := before.Truncate(time.Minute)
+	if t.Equal(before) {
+		t = t.Add(-time.Minute)
+	}
+	limit := t.AddDate(-5, 0, 0) // safety window
+	for t.After(limit) {
+		if !c.months[int(t.Month())] {
+			// Jump to the last minute of the previous month.
+			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).Add(-time.Minute)
+			continue
+		}
+		if !c.dayMatches(t) {
+			// Jump to the last minute of the previous day.
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Add(-time.Minute)
+			continue
+		}
+		if !c.hours[t.Hour()] {
+			// Jump to the last minute of the previous hour.
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(-time.Minute)
+			continue
+		}
+		if !c.minutes[t.Minute()] {
+			t = t.Add(-time.Minute)
 			continue
 		}
 		return t
