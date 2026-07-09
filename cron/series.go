@@ -209,6 +209,25 @@ func (c *CronSeries) Prev(before time.Time) time.Time {
 	return c.prev(before)
 }
 
+// Match reports whether t falls on a scheduled minute. Seconds and smaller
+// are ignored, matching the schedule's minute granularity.
+func (c *CronSeries) Match(t time.Time) bool {
+	return c.months[int(t.Month())] && c.dayMatches(t) && c.hours[t.Hour()] && c.minutes[t.Minute()]
+}
+
+// MatchRange reports whether the schedule has an occurrence within [from,
+// to], inclusive on both ends. It returns false if to is before from.
+func (c *CronSeries) MatchRange(from, to time.Time) bool {
+	if to.Before(from) {
+		return false
+	}
+	if c.Match(from) {
+		return true
+	}
+	occurrence := c.next(from)
+	return !occurrence.IsZero() && !occurrence.After(to)
+}
+
 // UntilNext returns the duration from 'from' until the next scheduled time,
 // equivalent to Next(from).Sub(from). It wraps ErrNoMatch if no match
 // exists within the search window.

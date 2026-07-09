@@ -222,6 +222,105 @@ func TestCronSeriesSincePrev(t *testing.T) {
 	})
 }
 
+func TestCronSeriesMatch(t *testing.T) {
+	t.Run("Should match or reject a range of times regardless of seconds", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		cases := []struct {
+			name string
+			expr string
+			t    string
+			want bool
+		}{
+			{
+				name: "matches on the scheduled minute",
+				expr: "5 * * * *",
+				t:    "2025-08-15 12:05:00",
+				want: true,
+			},
+			{
+				name: "matches regardless of seconds",
+				expr: "5 * * * *",
+				t:    "2025-08-15 12:05:42",
+				want: true,
+			},
+			{
+				name: "rejects a different minute",
+				expr: "5 * * * *",
+				t:    "2025-08-15 12:06:00",
+				want: false,
+			},
+			{
+				name: "matches with dom/dow union",
+				expr: "0 0 20 * 5",
+				t:    "2025-08-22 00:00:00", // Friday the 22nd
+				want: true,
+			},
+		}
+
+		for _, c := range cases {
+			series, err := NewCronSeries(c.expr)
+			if err != nil {
+				t.Fatalf("%s: failed to create cron series: %v", c.name, err)
+			}
+			got := series.Match(mustParseTime(t, layout, c.t))
+			assert.Equal(t, c.want, got, c.name)
+		}
+	})
+}
+
+func TestCronSeriesMatchRange(t *testing.T) {
+	t.Run("Should report whether an occurrence falls within a range", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		cases := []struct {
+			name string
+			expr string
+			from string
+			to   string
+			want bool
+		}{
+			{
+				name: "from itself is a match",
+				expr: "5 * * * *",
+				from: "2025-08-15 12:05:00",
+				to:   "2025-08-15 12:05:00",
+				want: true,
+			},
+			{
+				name: "an occurrence falls inside the range",
+				expr: "5 * * * *",
+				from: "2025-08-15 12:01:00",
+				to:   "2025-08-15 12:10:00",
+				want: true,
+			},
+			{
+				name: "no occurrence falls inside the range",
+				expr: "5 * * * *",
+				from: "2025-08-15 12:06:00",
+				to:   "2025-08-15 12:59:00",
+				want: false,
+			},
+			{
+				name: "to before from is always false",
+				expr: "5 * * * *",
+				from: "2025-08-15 12:10:00",
+				to:   "2025-08-15 12:01:00",
+				want: false,
+			},
+		}
+
+		for _, c := range cases {
+			series, err := NewCronSeries(c.expr)
+			if err != nil {
+				t.Fatalf("%s: failed to create cron series: %v", c.name, err)
+			}
+			from := mustParseTime(t, layout, c.from)
+			to := mustParseTime(t, layout, c.to)
+			got := series.MatchRange(from, to)
+			assert.Equal(t, c.want, got, c.name)
+		}
+	})
+}
+
 func TestNewCronSeriesInvalidExpr(t *testing.T) {
 	t.Run("Should reject a range of invalid expressions", func(t *testing.T) {
 		cases := []struct {
