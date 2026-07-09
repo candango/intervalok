@@ -1,3 +1,38 @@
+// Package cron parses standard cron expressions and resolves them against
+// the calendar to answer "when is the next/previous occurrence" and "how
+// long until/since it".
+//
+// CronSeries is the entry point: parse an expression with NewCronSeries,
+// then query it with Next/Prev (absolute time.Time) or UntilNext/SincePrev
+// (time.Duration, ready for time.Sleep or a retry loop). CronSeries is
+// stateless: every method is a pure function of its argument, so the same
+// value can be shared across goroutines and queried repeatedly without
+// synchronization.
+//
+// # Expression syntax
+//
+// Expressions use the standard 5-field format: minute, hour, day-of-month,
+// month, day-of-week. Each field accepts a wildcard ("*"), a single value, a
+// range ("1-5"), a step ("*/5", "1-30/5"), or a comma-separated list of any
+// of those. Month and day-of-week fields also accept the standard
+// three-letter names ("jan"-"dec", "sun"-"sat"), case-insensitively.
+//
+// When both day-of-month and day-of-week are restricted (neither is "*"),
+// standard cron matches a day by their union: it fires when either field
+// matches, not only when both do. This is the same rule vixie cron and its
+// descendants use; see man 5 crontab.
+//
+// A leading "@" alias expands to a fixed expression before parsing:
+// @yearly/@annually ("0 0 1 1 *"), @monthly ("0 0 1 * *"), @weekly
+// ("0 0 * * 0"), @daily/@midnight ("0 0 * * *"), @hourly ("0 * * * *").
+//
+// # Errors
+//
+// NewCronSeries wraps ErrInvalidExpr for any parse failure; check with
+// errors.Is. UntilNext and SincePrev wrap ErrNoMatch when no occurrence
+// exists within the search window (for example an impossible calendar date
+// such as February 31st). Next and Prev have no error return: they signal
+// the same condition with the zero time.Time, checkable with IsZero.
 package cron
 
 import (
@@ -16,7 +51,31 @@ var ErrInvalidExpr = errors.New("invalid cron expression")
 // within the search window, for example an impossible calendar date.
 var ErrNoMatch = errors.New("no match found for expression")
 
-// CronSeries represents a parsed cron expression and stores allowed values for each field.
+// aliases maps predefined schedule shorthands to their 5-field equivalent.
+var aliases = map[string]string{
+	"@yearly":   "0 0 1 1 *",
+	"@annually": "0 0 1 1 *",
+	"@monthly":  "0 0 1 * *",
+	"@weekly":   "0 0 * * 0",
+	"@daily":    "0 0 * * *",
+	"@midnight": "0 0 * * *",
+	"@hourly":   "0 * * * *",
+}
+
+// monthNames and dowNames map the standard three-letter abbreviations to
+// their numeric field value, allowing them in place of numbers.
+var monthNames = map[string]int{
+	"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+	"jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+var dowNames = map[string]int{
+	"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
+}
+
+// CronSeries is a parsed cron expression. It holds the set of allowed values
+// for each field and is safe for concurrent use: all of its methods are pure
+// functions of their argument, with no shared mutable state.
 type CronSeries struct {
 	minutes [60]bool // Allowed minutes (0-59)
 	hours   [24]bool // Allowed hours (0-23)
@@ -32,27 +91,32 @@ type CronSeries struct {
 	expr          string // Original cron expression
 }
 
-// NewCronSeries parses a standard 5-field cron expression and returns a CronSeries.
-// Returns an error if the expression is invalid.
+// NewCronSeries parses a standard 5-field cron expression, or one of the
+// "@" aliases documented at the package level, and returns a CronSeries.
+// It wraps ErrInvalidExpr if the expression is invalid.
 func NewCronSeries(expr string) (*CronSeries, error) {
-	fields := strings.Fields(expr)
+	resolved := expr
+	if alias, ok := aliases[strings.ToLower(strings.TrimSpace(expr))]; ok {
+		resolved = alias
+	}
+	fields := strings.Fields(resolved)
 	if len(fields) != 5 {
 		return nil, fmt.Errorf("%w: must have 5 fields, got %d", ErrInvalidExpr, len(fields))
 	}
 	c := &CronSeries{expr: expr}
-	if err := parseField(fields[0], 0, 59, c.minutes[:]); err != nil {
+	if err := parseField(fields[0], 0, 59, c.minutes[:], nil); err != nil {
 		return nil, fmt.Errorf("minute: %w", err)
 	}
-	if err := parseField(fields[1], 0, 23, c.hours[:]); err != nil {
+	if err := parseField(fields[1], 0, 23, c.hours[:], nil); err != nil {
 		return nil, fmt.Errorf("hour: %w", err)
 	}
-	if err := parseField(fields[2], 1, 31, c.dom[:]); err != nil {
+	if err := parseField(fields[2], 1, 31, c.dom[:], nil); err != nil {
 		return nil, fmt.Errorf("day of month: %w", err)
 	}
-	if err := parseField(fields[3], 1, 12, c.months[:]); err != nil {
+	if err := parseField(fields[3], 1, 12, c.months[:], monthNames); err != nil {
 		return nil, fmt.Errorf("month: %w", err)
 	}
-	if err := parseField(fields[4], 0, 6, c.dow[:]); err != nil {
+	if err := parseField(fields[4], 0, 6, c.dow[:], dowNames); err != nil {
 		return nil, fmt.Errorf("day of week: %w", err)
 	}
 	c.domRestricted = fields[2] != "*"
@@ -62,8 +126,10 @@ func NewCronSeries(expr string) (*CronSeries, error) {
 
 // parseField populates the boolean array for a single cron field.
 // Supports wildcards (*), ranges (x-y), steps (/), and comma-separated lists.
+// When names is non-nil, tokens are also matched case-insensitively against
+// it before being parsed as numbers (e.g. "jan" or "mon").
 // Returns an error if the field is invalid.
-func parseField(field string, min, max int, arr []bool) error {
+func parseField(field string, min, max int, arr []bool, names map[string]int) error {
 	parts := strings.Split(field, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -87,15 +153,15 @@ func parseField(field string, min, max int, arr []bool) error {
 			rmax = max
 		} else if strings.Contains(rangePart, "-") {
 			bounds := strings.SplitN(rangePart, "-", 2)
-			var err1, err2 error
-			rmin, err1 = strconv.Atoi(bounds[0])
-			rmax, err2 = strconv.Atoi(bounds[1])
-			if err1 != nil || err2 != nil || rmin > rmax || rmin < min || rmax > max {
+			var ok1, ok2 bool
+			rmin, ok1 = resolveToken(bounds[0], names)
+			rmax, ok2 = resolveToken(bounds[1], names)
+			if !ok1 || !ok2 || rmin > rmax || rmin < min || rmax > max {
 				return fmt.Errorf("%w: invalid range: %s", ErrInvalidExpr, rangePart)
 			}
 		} else {
-			val, err := strconv.Atoi(rangePart)
-			if err != nil || val < min || val > max {
+			val, ok := resolveToken(rangePart, names)
+			if !ok || val < min || val > max {
 				return fmt.Errorf("%w: invalid value: %s", ErrInvalidExpr, rangePart)
 			}
 			rmin, rmax = val, val
@@ -108,25 +174,44 @@ func parseField(field string, min, max int, arr []bool) error {
 	return nil
 }
 
-// Current returns the next scheduled time after the provided time.
+// resolveToken resolves a single field token to its numeric value, checking
+// names (case-insensitively) before falling back to plain integer parsing.
+func resolveToken(tok string, names map[string]int) (int, bool) {
+	if names != nil {
+		if val, ok := names[strings.ToLower(tok)]; ok {
+			return val, true
+		}
+	}
+	val, err := strconv.Atoi(tok)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
+// Current is an alias for Next, kept for backwards compatibility. Prefer
+// Next in new code.
 func (c *CronSeries) Current(after time.Time) time.Time {
 	return c.next(after)
 }
 
-// Next returns the next scheduled time after the provided time.
+// Next returns the next scheduled time strictly after the provided time. If
+// no match exists within the search window, it returns the zero time.Time;
+// check with IsZero.
 func (c *CronSeries) Next(after time.Time) time.Time {
 	return c.next(after)
 }
 
 // Prev returns the last scheduled time strictly before the provided time.
-// If no match exists within the safety window, the zero time.Time is
-// returned.
+// If no match exists within the search window, it returns the zero
+// time.Time; check with IsZero.
 func (c *CronSeries) Prev(before time.Time) time.Time {
 	return c.prev(before)
 }
 
-// UntilNext returns the duration from 'from' until the next scheduled time.
-// If no match exists within the safety window, it returns an error.
+// UntilNext returns the duration from 'from' until the next scheduled time,
+// equivalent to Next(from).Sub(from). It wraps ErrNoMatch if no match
+// exists within the search window.
 func (c *CronSeries) UntilNext(from time.Time) (time.Duration, error) {
 	next := c.next(from)
 	if next.IsZero() {
@@ -136,7 +221,8 @@ func (c *CronSeries) UntilNext(from time.Time) (time.Duration, error) {
 }
 
 // SincePrev returns the duration since the last scheduled time before
-// 'from'. If no match exists within the safety window, it returns an error.
+// 'from', equivalent to from.Sub(Prev(from)). It wraps ErrNoMatch if no
+// match exists within the search window.
 func (c *CronSeries) SincePrev(from time.Time) (time.Duration, error) {
 	prev := c.prev(from)
 	if prev.IsZero() {
@@ -160,7 +246,7 @@ func IsValid(expr string) bool {
 // returned.
 func (c *CronSeries) next(after time.Time) time.Time {
 	t := after.Truncate(time.Minute).Add(time.Minute)
-	limit := t.AddDate(5, 0, 0) // safety window
+	limit := t.AddDate(5, 0, 0) // search window
 	for t.Before(limit) {
 		if !c.months[int(t.Month())] {
 			// Jump to the first minute of the next month.
@@ -198,7 +284,7 @@ func (c *CronSeries) prev(before time.Time) time.Time {
 	if t.Equal(before) {
 		t = t.Add(-time.Minute)
 	}
-	limit := t.AddDate(-5, 0, 0) // safety window
+	limit := t.AddDate(-5, 0, 0) // search window
 	for t.After(limit) {
 		if !c.months[int(t.Month())] {
 			// Jump to the last minute of the previous month.
