@@ -327,7 +327,6 @@ func TestNewCronSeriesInvalidExpr(t *testing.T) {
 			name string
 			expr string
 		}{
-			{name: "wrong field count", expr: "* * * *"},
 			{name: "bad step value", expr: "*/x * * * *"},
 			{name: "bad range", expr: "60-10 * * * *"},
 			{name: "bad value", expr: "99 * * * *"},
@@ -458,6 +457,129 @@ func TestCronSeriesMonthAndWeekdayNames(t *testing.T) {
 			got := series.Next(after)
 			want := mustParseTime(t, layout, c.want)
 			assert.Equal(t, want, got, c.name)
+		}
+	})
+}
+
+func TestCronSeriesSecondsField(t *testing.T) {
+	t.Run("Should resolve a 6-field expression at second granularity", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		cases := []struct {
+			name  string
+			expr  string
+			after string
+			want  string
+		}{
+			{
+				name:  "every 30 seconds",
+				expr:  "*/30 * * * * *",
+				after: "2025-08-15 12:00:10",
+				want:  "2025-08-15 12:00:30",
+			},
+			{
+				name:  "fixed second, minute rolls over",
+				expr:  "45 * * * * *",
+				after: "2025-08-15 12:00:45",
+				want:  "2025-08-15 12:01:45",
+			},
+			{
+				name:  "second field constrains within the matching minute",
+				expr:  "15 5 * * * *",
+				after: "2025-08-15 12:04:00",
+				want:  "2025-08-15 12:05:15",
+			},
+		}
+
+		for _, c := range cases {
+			series, err := NewCronSeries(c.expr)
+			if err != nil {
+				t.Fatalf("%s: failed to create cron series: %v", c.name, err)
+			}
+			after := mustParseTime(t, layout, c.after)
+			got := series.Next(after)
+			want := mustParseTime(t, layout, c.want)
+			assert.Equal(t, want, got, c.name)
+		}
+	})
+
+	t.Run("Should walk backwards at second granularity", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		series, err := NewCronSeries("45 * * * * *")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		before := mustParseTime(t, layout, "2025-08-15 12:01:10")
+		got := series.Prev(before)
+		want := mustParseTime(t, layout, "2025-08-15 12:00:45")
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Should match down to the second and ignore it for 5-field expressions", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		fiveField, err := NewCronSeries("5 * * * *")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		assert.True(t, fiveField.Match(mustParseTime(t, layout, "2025-08-15 12:05:42")))
+
+		sixField, err := NewCronSeries("30 5 * * * *")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		assert.True(t, sixField.Match(mustParseTime(t, layout, "2025-08-15 12:05:30")))
+		assert.False(t, sixField.Match(mustParseTime(t, layout, "2025-08-15 12:05:31")))
+	})
+}
+
+func TestCronSeriesYearField(t *testing.T) {
+	t.Run("Should resolve a 7-field expression restricted to a year range", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		series, err := NewCronSeries("0 0 0 1 1 * 2027-2029")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		after := mustParseTime(t, layout, "2025-01-01 00:00:00")
+		got := series.Next(after)
+		want := mustParseTime(t, layout, "2027-01-01 00:00:00")
+		assert.Equal(t, want, got)
+	})
+
+	t.Run("Should return the zero time once the year range is exhausted forward", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		series, err := NewCronSeries("0 0 0 1 1 * 2027-2029")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		after := mustParseTime(t, layout, "2029-01-01 00:00:00")
+		assert.True(t, series.Next(after).IsZero())
+	})
+
+	t.Run("Should walk backwards within the year range", func(t *testing.T) {
+		layout := "2006-01-02 15:04:05"
+		series, err := NewCronSeries("0 0 0 1 1 * 2027-2029")
+		if err != nil {
+			t.Fatalf("failed to create cron series: %v", err)
+		}
+		before := mustParseTime(t, layout, "2028-06-01 00:00:00")
+		got := series.Prev(before)
+		want := mustParseTime(t, layout, "2028-01-01 00:00:00")
+		assert.Equal(t, want, got)
+	})
+}
+
+func TestNewCronSeriesFieldCount(t *testing.T) {
+	t.Run("Should reject expressions with an unsupported field count", func(t *testing.T) {
+		cases := []struct {
+			name string
+			expr string
+		}{
+			{name: "4 fields", expr: "* * * *"},
+			{name: "8 fields", expr: "* * * * * * * *"},
+		}
+
+		for _, c := range cases {
+			_, err := NewCronSeries(c.expr)
+			assert.ErrorIs(t, err, ErrInvalidExpr, c.name)
 		}
 	})
 }

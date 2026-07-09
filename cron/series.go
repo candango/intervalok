@@ -17,6 +17,13 @@
 // of those. Month and day-of-week fields also accept the standard
 // three-letter names ("jan"-"dec", "sun"-"sat"), case-insensitively.
 //
+// A 6-field expression prepends seconds ("second minute hour day-of-month
+// month day-of-week"), raising the schedule's resolution from minutes to
+// seconds. A 7-field expression additionally appends a year field. This
+// matches the field order used by robfig/cron, the de facto standard Go
+// cron library; it differs from croniter, which appends seconds and year
+// at the end instead of prepending seconds.
+//
 // When both day-of-month and day-of-week are restricted (neither is "*"),
 // standard cron matches a day by their union: it fires when either field
 // matches, not only when both do. This is the same rule vixie cron and its
@@ -77,50 +84,84 @@ var dowNames = map[string]int{
 // for each field and is safe for concurrent use: all of its methods are pure
 // functions of their argument, with no shared mutable state.
 type CronSeries struct {
-	minutes [60]bool // Allowed minutes (0-59)
-	hours   [24]bool // Allowed hours (0-23)
-	dom     [32]bool // Allowed days of month (1-31, 0 unused)
-	months  [13]bool // Allowed months (1-12, 0 unused)
-	dow     [7]bool  // Allowed days of week (0=Sunday)
+	seconds [60]bool    // Allowed seconds (0-59), only used when hasSeconds
+	minutes [60]bool    // Allowed minutes (0-59)
+	hours   [24]bool    // Allowed hours (0-23)
+	dom     [32]bool    // Allowed days of month (1-31, 0 unused)
+	months  [13]bool    // Allowed months (1-12, 0 unused)
+	dow     [7]bool     // Allowed days of week (0=Sunday)
+	years   [10000]bool // Allowed years (0-9999), only used when yearRestricted
 	// domRestricted and dowRestricted record whether the day-of-month and
 	// day-of-week fields were given as something other than '*'. Standard
 	// cron matches a day by the union (OR) of both fields when both are
 	// restricted, and by intersection otherwise.
 	domRestricted bool
+	// hasSeconds is true for 6- and 7-field expressions, raising the
+	// schedule's resolution from minutes to seconds.
+	hasSeconds    bool
 	dowRestricted bool
-	expr          string // Original cron expression
+	// yearRestricted is true for 7-field expressions with a year field
+	// other than '*'.
+	yearRestricted bool
+	expr           string // Original cron expression
 }
 
-// NewCronSeries parses a standard 5-field cron expression, or one of the
-// "@" aliases documented at the package level, and returns a CronSeries.
-// It wraps ErrInvalidExpr if the expression is invalid.
+// NewCronSeries parses a cron expression and returns a CronSeries. The
+// expression is one of the "@" aliases documented at the package level, a
+// standard 5-field expression, a 6-field expression with a leading seconds
+// field, or a 7-field expression additionally ending in a year field. It
+// wraps ErrInvalidExpr if the expression is invalid.
 func NewCronSeries(expr string) (*CronSeries, error) {
 	resolved := expr
 	if alias, ok := aliases[strings.ToLower(strings.TrimSpace(expr))]; ok {
 		resolved = alias
 	}
 	fields := strings.Fields(resolved)
-	if len(fields) != 5 {
-		return nil, fmt.Errorf("%w: must have 5 fields, got %d", ErrInvalidExpr, len(fields))
+
+	var offset int
+	hasSeconds := false
+	switch len(fields) {
+	case 5:
+		offset = 0
+	case 6, 7:
+		offset = 1
+		hasSeconds = true
+	default:
+		return nil, fmt.Errorf("%w: must have 5, 6 or 7 fields, got %d", ErrInvalidExpr, len(fields))
 	}
-	c := &CronSeries{expr: expr}
-	if err := parseField(fields[0], 0, 59, c.minutes[:], nil); err != nil {
+
+	c := &CronSeries{expr: expr, hasSeconds: hasSeconds}
+	if hasSeconds {
+		if err := parseField(fields[0], 0, 59, c.seconds[:], nil); err != nil {
+			return nil, fmt.Errorf("second: %w", err)
+		}
+	}
+	if err := parseField(fields[offset], 0, 59, c.minutes[:], nil); err != nil {
 		return nil, fmt.Errorf("minute: %w", err)
 	}
-	if err := parseField(fields[1], 0, 23, c.hours[:], nil); err != nil {
+	if err := parseField(fields[offset+1], 0, 23, c.hours[:], nil); err != nil {
 		return nil, fmt.Errorf("hour: %w", err)
 	}
-	if err := parseField(fields[2], 1, 31, c.dom[:], nil); err != nil {
+	if err := parseField(fields[offset+2], 1, 31, c.dom[:], nil); err != nil {
 		return nil, fmt.Errorf("day of month: %w", err)
 	}
-	if err := parseField(fields[3], 1, 12, c.months[:], monthNames); err != nil {
+	if err := parseField(fields[offset+3], 1, 12, c.months[:], monthNames); err != nil {
 		return nil, fmt.Errorf("month: %w", err)
 	}
-	if err := parseField(fields[4], 0, 6, c.dow[:], dowNames); err != nil {
+	if err := parseField(fields[offset+4], 0, 6, c.dow[:], dowNames); err != nil {
 		return nil, fmt.Errorf("day of week: %w", err)
 	}
-	c.domRestricted = fields[2] != "*"
-	c.dowRestricted = fields[4] != "*"
+	c.domRestricted = fields[offset+2] != "*"
+	c.dowRestricted = fields[offset+4] != "*"
+
+	if len(fields) == 7 {
+		c.yearRestricted = fields[6] != "*"
+		if c.yearRestricted {
+			if err := parseField(fields[6], 0, len(c.years)-1, c.years[:], nil); err != nil {
+				return nil, fmt.Errorf("year: %w", err)
+			}
+		}
+	}
 	return c, nil
 }
 
@@ -209,10 +250,29 @@ func (c *CronSeries) Prev(before time.Time) time.Time {
 	return c.prev(before)
 }
 
-// Match reports whether t falls on a scheduled minute. Seconds and smaller
-// are ignored, matching the schedule's minute granularity.
+// Match reports whether t falls on a scheduled instant, at the schedule's
+// own granularity: minute for a 5-field expression, second for a 6- or
+// 7-field one (in which case seconds below that are ignored).
 func (c *CronSeries) Match(t time.Time) bool {
-	return c.months[int(t.Month())] && c.dayMatches(t) && c.hours[t.Hour()] && c.minutes[t.Minute()]
+	if !c.yearMatches(t.Year()) {
+		return false
+	}
+	if !c.months[int(t.Month())] || !c.dayMatches(t) || !c.hours[t.Hour()] || !c.minutes[t.Minute()] {
+		return false
+	}
+	return !c.hasSeconds || c.seconds[t.Second()]
+}
+
+// yearMatches reports whether year satisfies the year field, or is always
+// true when the expression has no year field or the field is a wildcard.
+func (c *CronSeries) yearMatches(year int) bool {
+	if !c.yearRestricted {
+		return true
+	}
+	if year < 0 || year >= len(c.years) {
+		return false
+	}
+	return c.years[year]
 }
 
 // MatchRange reports whether the schedule has an occurrence within [from,
@@ -258,32 +318,47 @@ func IsValid(expr string) bool {
 }
 
 // next computes the next time that matches the cron schedule after the given
-// time. It advances through each field in order: month, day, hour, minute,
-// jumping to the start of the next candidate period whenever a field does not
-// match. The returned time is strictly after 'after'. If no match exists
-// within a five year window (e.g. an impossible date), the zero time.Time is
-// returned.
+// time. It advances through each field in order: year, month, day, hour,
+// minute, second, jumping to the start of the next candidate period whenever
+// a field does not match. The returned time is strictly after 'after'. If no
+// match exists within a five year window (e.g. an impossible date), the zero
+// time.Time is returned.
 func (c *CronSeries) next(after time.Time) time.Time {
-	t := after.Truncate(time.Minute).Add(time.Minute)
+	var t time.Time
+	if c.hasSeconds {
+		t = after.Truncate(time.Second).Add(time.Second)
+	} else {
+		t = after.Truncate(time.Minute).Add(time.Minute)
+	}
 	limit := t.AddDate(5, 0, 0) // search window
 	for t.Before(limit) {
+		if !c.yearMatches(t.Year()) {
+			// Jump to the first instant of the next year.
+			t = time.Date(t.Year()+1, 1, 1, 0, 0, 0, 0, t.Location())
+			continue
+		}
 		if !c.months[int(t.Month())] {
-			// Jump to the first minute of the next month.
+			// Jump to the first instant of the next month.
 			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).AddDate(0, 1, 0)
 			continue
 		}
 		if !c.dayMatches(t) {
-			// Jump to the first minute of the next day.
+			// Jump to the first instant of the next day.
 			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).AddDate(0, 0, 1)
 			continue
 		}
 		if !c.hours[t.Hour()] {
-			// Jump to the first minute of the next hour.
+			// Jump to the first instant of the next hour.
 			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(time.Hour)
 			continue
 		}
 		if !c.minutes[t.Minute()] {
-			t = t.Add(time.Minute)
+			// Jump to the first instant of the next minute.
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, t.Location()).Add(time.Minute)
+			continue
+		}
+		if c.hasSeconds && !c.seconds[t.Second()] {
+			t = t.Add(time.Second)
 			continue
 		}
 		return t
@@ -292,36 +367,56 @@ func (c *CronSeries) next(after time.Time) time.Time {
 }
 
 // prev computes the last time that matches the cron schedule strictly before
-// the given time. It mirrors next, walking backwards through month, day,
-// hour, and minute. The returned time is strictly before 'before'. If no
-// match exists within a five year window, the zero time.Time is returned.
+// the given time. It mirrors next, walking backwards through year, month,
+// day, hour, minute, and second. The returned time is strictly before
+// 'before'. If no match exists within a five year window, the zero
+// time.Time is returned.
 func (c *CronSeries) prev(before time.Time) time.Time {
-	// Truncate floors to the start of the minute. If 'before' sits exactly
-	// on a minute boundary, that minute is not strictly before itself, so
-	// step back one more minute; otherwise the floored minute already is.
-	t := before.Truncate(time.Minute)
+	// unit is the schedule's own granularity: every "jump to the edge of
+	// the previous period" below lands exactly one unit before the start
+	// of the current period, which is the true last instant of that
+	// previous period regardless of how fine-grained unit is.
+	unit := time.Minute
+	if c.hasSeconds {
+		unit = time.Second
+	}
+
+	// Truncate floors to the start of the unit. If 'before' sits exactly
+	// on a unit boundary, that instant is not strictly before itself, so
+	// step back one more unit; otherwise the floored instant already is.
+	t := before.Truncate(unit)
 	if t.Equal(before) {
-		t = t.Add(-time.Minute)
+		t = t.Add(-unit)
 	}
 	limit := t.AddDate(-5, 0, 0) // search window
 	for t.After(limit) {
+		if !c.yearMatches(t.Year()) {
+			// Jump to the last instant of the previous year.
+			t = time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location()).Add(-unit)
+			continue
+		}
 		if !c.months[int(t.Month())] {
-			// Jump to the last minute of the previous month.
-			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).Add(-time.Minute)
+			// Jump to the last instant of the previous month.
+			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()).Add(-unit)
 			continue
 		}
 		if !c.dayMatches(t) {
-			// Jump to the last minute of the previous day.
-			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Add(-time.Minute)
+			// Jump to the last instant of the previous day.
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()).Add(-unit)
 			continue
 		}
 		if !c.hours[t.Hour()] {
-			// Jump to the last minute of the previous hour.
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(-time.Minute)
+			// Jump to the last instant of the previous hour.
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location()).Add(-unit)
 			continue
 		}
 		if !c.minutes[t.Minute()] {
-			t = t.Add(-time.Minute)
+			// Jump to the last instant of the previous minute.
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, t.Location()).Add(-unit)
+			continue
+		}
+		if c.hasSeconds && !c.seconds[t.Second()] {
+			t = t.Add(-unit)
 			continue
 		}
 		return t
