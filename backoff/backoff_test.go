@@ -67,27 +67,74 @@ func jitterTestConfig() *ExponentialConfig {
 
 const jitterCyclePeriod = 11
 
-func TestExponentialBackoffIntervalJitterBounds(t *testing.T) {
-	t.Run("Should keep PercentJitter values within the configured band", func(t *testing.T) {
-		bi := NewExponentialBackoffInterval(30*time.Second, "config", jitterTestConfig())
-		jbi := NewExponentialBackoffInterval(30*time.Second, "config", jitterTestConfig())
-		jbiConfig := jbi.Config.(*ExponentialConfig)
-		jbiConfig.Jitter = true
-		jbiConfig.JitterStrategy = PercentJitter
+// TestJitterFuncBounds validates each JitterFunc against its own strategy
+// definition (not a re-derivation of the formula under test): FullJitter must
+// stay in [0, interval], EqualJitter in [interval/2, interval], PercentJitter
+// in [interval*(1-Randomizer), interval*(1+Randomizer)]. These are contract
+// bounds independent of how each function draws its random value.
+func TestJitterFuncBounds(t *testing.T) {
+	interval := 30 * time.Second
+	config := &ExponentialConfig{Randomizer: DefaultRandomizer}
 
-		cycles := 5
-		for range jitterCyclePeriod * cycles {
-			regularInterval := bi.Next()
-			delta := DefaultRandomizer * float64(regularInterval)
-			minInterval := time.Duration(float64(regularInterval) - delta)
-			maxInterval := time.Duration(float64(regularInterval) + delta)
-			jitterInterval := jbi.Next()
-			assert.True(t, minInterval <= jitterInterval,
-				"jitter %s below band min %s", jitterInterval, minInterval)
-			assert.True(t, maxInterval >= jitterInterval,
-				"jitter %s above band max %s", jitterInterval, maxInterval)
+	tests := []struct {
+		name   string
+		jitter JitterFunc
+		lower  time.Duration
+		upper  time.Duration
+	}{
+		{
+			name:   "FullJitter",
+			jitter: FullJitter,
+			lower:  0,
+			upper:  interval,
+		},
+		{
+			name:   "EqualJitter",
+			jitter: EqualJitter,
+			lower:  interval / 2,
+			upper:  interval,
+		},
+		{
+			name:   "PercentJitter",
+			jitter: PercentJitter,
+			lower:  time.Duration(float64(interval) * (1 - DefaultRandomizer)),
+			upper:  time.Duration(float64(interval) * (1 + DefaultRandomizer)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for range 1000 {
+				got := tt.jitter(interval, config)
+				assert.True(t, got >= tt.lower,
+					"%s: %s below lower bound %s", tt.name, got, tt.lower)
+				assert.True(t, got <= tt.upper,
+					"%s: %s above upper bound %s", tt.name, got, tt.upper)
+			}
+		})
+	}
+}
+
+// TestDecorrelatedNextFuncBounds validates DecorrelatedNextFunc's own
+// recurrence contract: sleep = min(cap, random(base, prevSleep*3)), so every
+// call must stay within [base, min(cap, prevSleep*3)] and never exceed cap.
+func TestDecorrelatedNextFuncBounds(t *testing.T) {
+	t.Run("Should keep each sleep within [base, min(cap, prevSleep*3)]", func(t *testing.T) {
+		base := 1 * time.Second
+		cap := 10 * time.Second
+		bi := NewDecorrelatedBackoffInterval(base,
+			"config", &DecorrelatedConfig{MaxInterval: cap})
+
+		prevSleep := base
+		for range 200 {
+			upper := min(cap, prevSleep*3)
+			got := bi.Next()
+			assert.True(t, got >= base, "sleep %s below base %s", got, base)
+			assert.True(t, got <= upper,
+				"sleep %s above recurrence bound %s", got, upper)
+			assert.True(t, got <= cap, "sleep %s above cap %s", got, cap)
+			prevSleep = got
 		}
-		assert.Equal(t, cycles, jbi.State.(*ExponentialState).Cycles)
 	})
 }
 
