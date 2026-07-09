@@ -2,7 +2,6 @@ package backoff
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -36,7 +35,6 @@ func TestExponentialBackoffInterval(t *testing.T) {
 		state := bi.State.(*ExponentialState)
 		cycles := 8
 		for range 7 * 8 {
-			fmt.Printf("Cycle %d: %s, %v\n", state.Cycles, bi.Current(), state.inProgress)
 			expected := bi.InitialInterval
 			if state.inProgress {
 				expected = config.MaxInterval
@@ -44,9 +42,7 @@ func TestExponentialBackoffInterval(t *testing.T) {
 					expected = time.Duration(float64(bi.Current()) * config.Multiplier)
 				}
 			}
-			next := bi.Next()
-			fmt.Println("comparing: ", expected, next)
-			assert.Equal(t, expected, next)
+			assert.Equal(t, expected, bi.Next())
 		}
 		assert.Equal(t, cycles, state.Cycles)
 	})
