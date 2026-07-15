@@ -1,6 +1,6 @@
 module github.com/candango/intervalok
 
-go 1.22
+go 1.25
 
 require github.com/stretchr/testify v1.9.0
 
