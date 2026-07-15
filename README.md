@@ -1,4 +1,4 @@
-# intervalok
+# IntervalOK
 
 A Go library for series of time intervals: schedules that resolve in
 `time.Duration`, ready for `time.Sleep`, retry loops, and schedulers.
@@ -58,11 +58,15 @@ if err != nil {
 }
 ```
 
-## Status
+## Support
 
-Early development. APIs may change without notice until a first tagged
-release.
+IntervalOK is one of the [Candango Open Source Group
+](https://www.candango.org/projects/) initiatives.
+
+For bug reports, feature requests, and questions, please open an
+[issue](https://github.com/candango/intervalok/issues) on GitHub.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+NvimIM is distributed under the MIT License. See the
+[LICENSE](./LICENSE) file for details.
